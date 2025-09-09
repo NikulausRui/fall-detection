@@ -1,48 +1,13 @@
 # Importing the necessary libraries
 import time
-
+import os
 import cv2
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
-# import openpifpaf
 from ultralytics import YOLO
 
-
-# class KeyPoints:
-#     """
-#     Used to run the OpenPifPaf model and find the keypoints of an image.
-#     function(model) - Loads the model
-#     function(detectPoints) - Finds the keypoints of an image
-#     """
-
-#     def __init__(self):
-#         self.predictor = None
-
-#     def model(
-#         self, checkpoint="shufflenetv2k16"
-#     ):  # Loads the model with provided checkpoint, which specifies the model's architecture complexity
-#         self.predictor = openpifpaf.Predictor(checkpoint=checkpoint)
-
-#     def detectPoints(self, frame):  # Detects the keypoints of an image
-#         frameRGB = cv2.cvtColor(
-#             frame, cv2.COLOR_BGR2RGB
-#         )  # Converts BGR image to RGB image
-
-#         predictions, gt_anns, meta = self.predictor.numpy_image(
-#             frameRGB
-#         )  # Finds the keypoints of the image
-
-#         if predictions == []:  # If no keypoints found, return an empty list
-#             predict = []
-
-#         else:
-#             predict = predictions[0].data[
-#                 :, :2
-#             ]  # If keypoints found, remove the probability column
-
-#         return predict  # Return the predicted points
 
 class KeyPoints:
     """
@@ -55,11 +20,11 @@ class KeyPoints:
         self.model_pose = None
 
     def model(
-        self, checkpoint="yolov8n-pose.pt"
+        self, checkpoint="yolo11n-pose.pt"
     ):  # 加载指定预训练权重的YOLOv8姿态估计模型
         """
         加载YOLOv8姿态估计模型。
-        可用的模型包括: 'yolov8n-pose.pt', 'yolov8s-pose.pt', 'yolov8m-pose.pt', 等。
+        可用的模型包括: 'yolo11n-pose.pt', 'yolo11s-pose.pt', 'yolo11m-pose.pt', 等。
         """
         self.model_pose = YOLO(checkpoint)
 
@@ -132,6 +97,71 @@ class FeatureExtractor:
         self.fps = 6  # Number of frames to consider in every second
         self.threshold = 10  # The threshold for fall detection
 
+    def get_body_dimension(self, keypoints):
+        """
+        计算包裹所有可见关键点的边界框的对角线长度。
+        :param keypoints: 未处理的关键点 (Numpy array)
+        :return: 对角线长度，如果可见关键点少于3个则返回 None
+        """
+        # 过滤掉无效的关键点 (NaN 值)
+        valid_points = keypoints[~np.isnan(keypoints).any(axis=1)]
+        
+        # 如果可见的关键点太少，无法可靠计算尺寸
+        if len(valid_points) < 3:
+            return None
+
+        x_min, y_min = np.min(valid_points, axis=0)
+        x_max, y_max = np.max(valid_points, axis=0)
+        
+        width = x_max - x_min
+        height = y_max - y_min
+        
+        # 计算对角线长度
+        diagonal = np.sqrt(width**2 + height**2)
+        
+        # 避免尺寸为0的情况
+        return diagonal if diagonal > 10 else None
+
+
+    def is_lying_down(self, keypoints, tolerance_ratio=0.3):
+        """
+        检查姿态是否为躺倒。
+        使用身体边界框对角线长度作为动态标尺。
+        :param keypoints: 包含 NaN 的原始关键点
+        :param tolerance_ratio: 容忍的头脚垂直距离与身体对角线长度的比率。
+                                这个比率需要比之前的小，因为对角线通常比躯干长。
+                                例如 0.3 表示头脚垂直距离小于身体尺寸的30%，则认为是躺倒。
+        :return: 如果是躺倒姿态，返回 True，否则返回 False
+        """
+        # 步骤1: 使用新的、更稳健的方法计算身体尺寸标尺
+        body_size_metric = self.get_body_dimension(keypoints)
+        
+        if body_size_metric is None:
+            # 如果无法计算身体尺寸，则无法进行可靠判断
+            return False
+            
+        dynamic_tolerance = body_size_metric * tolerance_ratio
+
+        # 步骤2: 计算头脚垂直距离 (这部分逻辑不变)
+        head_y_coords = keypoints[[0, 5, 6], 1]
+        if np.all(np.isnan(head_y_coords)):
+            return False
+        head_avg_y = np.nanmean(head_y_coords)
+
+        ankle_y_coords = keypoints[[15, 16], 1]
+        if np.all(np.isnan(ankle_y_coords)):
+            return False
+        ankle_avg_y = np.nanmean(ankle_y_coords)
+        
+        vertical_distance = abs(head_avg_y - ankle_avg_y)
+
+        # 步骤3: 使用新的动态 tolerance 进行判断
+        if vertical_distance < dynamic_tolerance:
+            print(f"[姿态确认] 检测到躺倒姿态: 头-脚垂直距离={vertical_distance:.1f} < 动态阈值={dynamic_tolerance:.1f} (身体尺寸={body_size_metric:.1f})")
+            return True
+
+        return False
+
     def angleCalculation(self, vectors):
         """
         Used to calculate the angles between given pairs of vectors
@@ -196,11 +226,7 @@ class FeatureExtractor:
         Returns a scalar (the cost)
         """
 
-        angle_difference = np.abs(
-            np.nanmean(vector1_angles) - np.nanmean(vector2_angles)
-        )  # Absolute difference of means of previous and current angle lists
-
-        return angle_difference
+        return np.abs(np.nanmean(vector1_angles) - np.nanmean(vector2_angles))
 
     def differenceSum(self, vector1_angles, vector2_angles):
         """
@@ -295,13 +321,9 @@ class FeatureExtractor:
 
         sorted_ = np.sort(costs.reshape((len(costs))), axis=-1)  # Sort the costs
 
-        mean_start = np.mean(
-            sorted_[0 : int(len(sorted_) * 0.1)]
-        )  # Mean of the lowest 10% values
+        mean_start = np.mean(sorted_[:int(len(sorted_) * 0.1)])
 
-        mean_end = np.mean(
-            sorted_[(len(sorted_) - int(len(sorted_) * 0.1)) : len(sorted_)]
-        )  # Mean of the top 10% values
+        mean_end = np.mean(sorted_[len(sorted_) - int(len(sorted_) * 0.1):])
 
         result = np.clip(costs, mean_start, mean_end)  # Bound the list with that values
 
@@ -343,8 +365,28 @@ class FeatureExtractor:
         camera_video.set(4, 960)  # Height of the video
         video_fps = camera_video.get(cv2.CAP_PROP_FPS)  # Get the fps of the video
 
-        if video_fps != 30.0:  # If 30 fps
-            return "Video is not in 30 FPS!"  # If not 30 fps terminate the function
+        if video_fps != 30.0:  # If not 30 fps
+            print(f"警告：视频FPS为 {video_fps}，不是30fps")
+            print("尝试自动转换视频...")
+            
+            # 尝试转换视频
+            try:
+                from video_converter import convert_video
+                converted_path = convert_video(video)
+                if converted_path and os.path.exists(converted_path):
+                    print(f"视频转换成功: {converted_path}")
+                    # 重新打开转换后的视频
+                    camera_video.release()
+                    camera_video = cv2.VideoCapture(converted_path)
+                    camera_video.set(3, 1280)
+                    camera_video.set(4, 960)
+                    video_fps = camera_video.get(cv2.CAP_PROP_FPS)
+                    print(f"转换后FPS: {video_fps}")
+                else:
+                    print("视频转换失败，使用原始视频继续处理")
+            except Exception as e:
+                print(f"视频转换出错: {e}")
+                print("使用原始视频继续处理")
 
         frame_index = 0  # Frame Index
         previous_keypoints = 0  # Variable for storing the previous keypoints
@@ -382,13 +424,21 @@ class FeatureExtractor:
                     current_keypoints
                 )  # Handle missing values and add extra ones for current frame
 
-                vector1_pairs = np.array(
-                    previous_keypoints[self.vector_indices][self.pair_indices]
-                )  # Get vector pairs for previous keypoints
+                               # 检查关键点是否有效
+                if len(previous_keypoints) == 0 or len(current_keypoints) == 0:
+                    continue
+                
+                try:
+                    vector1_pairs = np.array(
+                        previous_keypoints[self.vector_indices][self.pair_indices]
+                    )  # Get vector pairs for previous keypoints
 
-                vector2_pairs = np.array(
-                    current_keypoints[self.vector_indices][self.pair_indices]
-                )  # Get vector pairs for current keypoints
+                    vector2_pairs = np.array(
+                        current_keypoints[self.vector_indices][self.pair_indices]
+                    )  # Get vector pairs for current keypoints
+                except (IndexError, TypeError) as e:
+                    print(f"关键点索引错误: {e}")
+                    continue
 
                 vector1_angles = (
                     self.angleCalculation(vector1_pairs) * self.angle_weights
@@ -469,24 +519,55 @@ class FeatureExtractor:
         Returns the list of the costs computed
         """
         falled = False
+        potential_fall_frames = 0
         plot = plt.figure(figsize=(5, 5))
         camera_video = cv2.VideoCapture(video)  # Capture the video
         camera_video.set(3, 1280)  # Width of the video
         camera_video.set(4, 960)  # Height of the video
 
-        if save:
-            fourcc = cv2.VideoWriter_fourcc(*"MP4V")
-            out = cv2.VideoWriter(
-                "FallDetection.mp4", fourcc, 6.0, (int(camera_video.get(3)) + 500, 500)
-            )
-
         video_fps = round(
             camera_video.get(cv2.CAP_PROP_FPS)
         )  # Get the fps of the video
 
-        if video_fps != 30.0:  # If 30 fps
+        if video_fps != 30.0:  # If not 30 fps
+            print(f"警告：视频FPS为 {video_fps}，不是30fps")
+            print("尝试自动转换视频...")
+            
+            # 尝试转换视频
+            try:
+                from video_converter import convert_video
+                converted_path = convert_video(video)
+                if converted_path and os.path.exists(converted_path):
+                    print(f"视频转换成功: {converted_path}")
+                    # 重新打开转换后的视频
+                    camera_video.release()
+                    camera_video = cv2.VideoCapture(converted_path)
+                    camera_video.set(3, 1280)
+                    camera_video.set(4, 960)
+                    video_fps = round(camera_video.get(cv2.CAP_PROP_FPS))
+                    print(f"转换后FPS: {video_fps}")
+                else:
+                    print("视频转换失败，使用原始视频继续处理")
+            except Exception as e:
+                print(f"视频转换出错: {e}")
+                print("使用原始视频继续处理")
 
-            return "Video is not 30 FPS"  # If not 30 fps terminate the function
+        if save:
+            fourcc = cv2.VideoWriter_fourcc(*"MP4V")
+            frame_width = int(camera_video.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(camera_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # 计算合成后的图像尺寸
+        plot_width = 500
+        plot_height = 500
+        output_width = frame_width + plot_width
+        output_height = max(frame_height, plot_height)
+
+        output_filename = f"assets/outputs/FallDetection-{os.path.basename(video).split('.')[0]}.mp4"
+        out = cv2.VideoWriter(
+            output_filename, fourcc, self.fps, (output_width, output_height)
+        )
+        print(f"输出视频已创建: {output_filename}, 尺寸: {output_width}x{output_height}, FPS: {self.fps}")
 
         frame_index = 0  # Frame Index
         previous_keypoints = 0  # Variable for storing the previous keypoints
@@ -527,13 +608,21 @@ class FeatureExtractor:
                     current_keypoints
                 )  # Handle missing values and add extra ones for current frame
 
-                vector1_pairs = np.array(
-                    previous_keypoints[self.vector_indices][self.pair_indices]
-                )  # Get vector pairs for previous keypoints
+                               # 检查关键点是否有效
+                if len(previous_keypoints) == 0 or len(current_keypoints) == 0:
+                    continue
+                
+                try:
+                    vector1_pairs = np.array(
+                        previous_keypoints[self.vector_indices][self.pair_indices]
+                    )  # Get vector pairs for previous keypoints
 
-                vector2_pairs = np.array(
-                    current_keypoints[self.vector_indices][self.pair_indices]
-                )  # Get vector pairs for current keypoints
+                    vector2_pairs = np.array(
+                        current_keypoints[self.vector_indices][self.pair_indices]
+                    )  # Get vector pairs for current keypoints
+                except (IndexError, TypeError) as e:
+                    print(f"关键点索引错误: {e}")
+                    continue
 
                 vector1_angles = (
                     self.angleCalculation(vector1_pairs) * self.angle_weights
@@ -582,8 +671,28 @@ class FeatureExtractor:
                         np.dot(self.cache_weights, cache) / 6
                     )  # Calculate the cost based on previous 6 costs
                     # print(weighted_cost)
-                    if weighted_cost > self.threshold:
-                        falled = True
+                    weighted_cost_value = float(weighted_cost.item())
+                    if weighted_cost_value > self.threshold:
+                        print(f"[初步触发] 成本值超限: {weighted_cost_value:.2f} > {self.threshold}")
+                        # 设置一个时间窗口（例如5帧），在接下来的5帧内检查姿态
+                        potential_fall_frames = 5 
+
+                    # 步骤 2: 姿态确认 - 在时间窗口内检查是否躺倒
+                    if potential_fall_frames > 0:
+                        # 使用当前帧的关键点进行姿态检查
+                        # 注意：current_keypoints 此时已经经过 collectData 处理
+                        if len(current_keypoints) > 17: # 确保关键点有效
+                            # 调用我们新写的函数，可以调整 tolerance
+                            is_lying = self.is_lying_down(current_keypoints, tolerance_ratio=0.15)
+                            
+                            if is_lying:
+                                print("!!! 跌倒确认 !!! 剧烈运动后检测到躺倒姿态。")
+                                falled = True
+                                # 可以在这里添加报警、变色等视觉提示
+                                potential_fall_frames = 0 # 确认后重置，避免重复报警
+                    
+                    # 递减时间窗口
+                    potential_fall_frames -= 1
 
                     cache = cache[
                         1:
@@ -600,14 +709,22 @@ class FeatureExtractor:
                 )
 
                 threshold = self.chooseThreshold(cost_method)
+                status_text = "status: normal"
+                status_color = (0, 255, 0) # 绿色
+                if potential_fall_frames > 0:
+                    status_text = "status: Likely Fall (Checking Pose...)"
+                    status_color = (0, 255, 255) # 黄色
+                elif falled:
+                    status_text = "status: Fall Detected!"
+                    status_color = (0, 0, 255) # 红色
 
                 cv2.putText(
                     frame,
-                    "Frame: " + str(frame_index / 5),
+                    status_text,
                     (0, 150),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     1,
-                    (0, 0, 255),
+                    status_color,
                     2,
                     cv2.LINE_AA,
                 )
@@ -645,13 +762,13 @@ class FeatureExtractor:
                 if save:
                     out.write(merged)
 
-                # cv2.imshow("plot", merged)
+                        # cv2.imshow("plot", merged)
 
             frame_index += 1  # Add 1 to frame index
-            # k = cv2.waitKey(1) & 0xFF
+                # k = cv2.waitKey(1) & 0xFF
 
-            # if k == 27:  # If esc is pressed break
-            #     break
+                # if k == 27:  # If esc is pressed break
+                #     break
 
         camera_video.release()
 
@@ -670,7 +787,7 @@ class FeatureExtractor:
 
         threshold = self.chooseThreshold(costmethod)
         axis.plot(cost, label="cost")
-        axis.set_title("Cost method is: " + costmethod)
+        axis.set_title(f"Cost method is: {costmethod}")
         axis.axhline(y=threshold, label="Threshold", color="black")
         axis.axvspan(fall_start, fall_end, alpha=0.25, color="red", label="Fall Frames")
         axis.legend(loc="upper right")
@@ -685,7 +802,7 @@ class FeatureExtractor:
         threshold = self.chooseThreshold(costmethod)
         plot = plt.figure(figsize=(10, 10))
         plt.plot(cost, label="cost")
-        plt.title("Cost method is: " + costmethod)
+        plt.title(f"Cost method is: {costmethod}")
         plt.legend(loc="upper right")
         plot.canvas.draw()
 

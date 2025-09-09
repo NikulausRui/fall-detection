@@ -1,6 +1,8 @@
 FROM pytorch/pytorch:1.13.1-cuda11.6-cudnn8-runtime
-COPY . /workspace
+RUN apt-get update && apt-get install curl libgl1 libglib2.0-0 -y && rm -rf /var/lib/apt/lists/*
+RUN pip install uv
+COPY requirements.txt /workspace
 WORKDIR /workspace
-RUN apt-get update && apt-get install libgl1 libglib2.0-0 -y && rm -rf /var/lib/apt/lists/*
-RUN pip install -r requirements.txt
-ENTRYPOINT ["python", "fall_detection.py"]
+RUN uv pip install -r requirements.txt --system
+COPY . /workspace
+ENTRYPOINT ["python", "fall_detetctoin.py"]
