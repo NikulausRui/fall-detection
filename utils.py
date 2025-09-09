@@ -2,45 +2,90 @@
 import time
 
 import cv2
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
-import openpifpaf
+# import openpifpaf
+from ultralytics import YOLO
 
+
+# class KeyPoints:
+#     """
+#     Used to run the OpenPifPaf model and find the keypoints of an image.
+#     function(model) - Loads the model
+#     function(detectPoints) - Finds the keypoints of an image
+#     """
+
+#     def __init__(self):
+#         self.predictor = None
+
+#     def model(
+#         self, checkpoint="shufflenetv2k16"
+#     ):  # Loads the model with provided checkpoint, which specifies the model's architecture complexity
+#         self.predictor = openpifpaf.Predictor(checkpoint=checkpoint)
+
+#     def detectPoints(self, frame):  # Detects the keypoints of an image
+#         frameRGB = cv2.cvtColor(
+#             frame, cv2.COLOR_BGR2RGB
+#         )  # Converts BGR image to RGB image
+
+#         predictions, gt_anns, meta = self.predictor.numpy_image(
+#             frameRGB
+#         )  # Finds the keypoints of the image
+
+#         if predictions == []:  # If no keypoints found, return an empty list
+#             predict = []
+
+#         else:
+#             predict = predictions[0].data[
+#                 :, :2
+#             ]  # If keypoints found, remove the probability column
+
+#         return predict  # Return the predicted points
 
 class KeyPoints:
     """
-    Used to run the OpenPifPaf model and find the keypoints of an image.
-    function(model) - Loads the model
-    function(detectPoints) - Finds the keypoints of an image
+    使用YOLOv8-Pose模型来运行并找到图像中的人体关键点。
+    function(model) - 加载模型
+    function(detectPoints) - 找到图像中的关键点
     """
 
     def __init__(self):
-        self.predictor = None
+        self.model_pose = None
 
     def model(
-        self, checkpoint="shufflenetv2k16"
-    ):  # Loads the model with provided checkpoint, which specifies the model's architecture complexity
-        self.predictor = openpifpaf.Predictor(checkpoint=checkpoint)
+        self, checkpoint="yolov8n-pose.pt"
+    ):  # 加载指定预训练权重的YOLOv8姿态估计模型
+        """
+        加载YOLOv8姿态估计模型。
+        可用的模型包括: 'yolov8n-pose.pt', 'yolov8s-pose.pt', 'yolov8m-pose.pt', 等。
+        """
+        self.model_pose = YOLO(checkpoint)
 
-    def detectPoints(self, frame):  # Detects the keypoints of an image
-        frameRGB = cv2.cvtColor(
-            frame, cv2.COLOR_BGR2RGB
-        )  # Converts BGR image to RGB image
+    def detectPoints(self, frame):  # 检测图像中的关键点
+        """
+        对输入的图像帧进行姿态估计。
+        :param frame: OpenCV格式的图像 (BGR)
+        :return: 第一个检测到的人的关键点坐标 (x, y)，格式为 numpy array。如果没有检测到人，则返回空列表。
+        """
+        # YOLOv8的predict函数可以直接处理BGR格式的Numpy数组
+        results = self.model_pose.predict(frame, verbose=False)  # verbose=False可以关闭控制台输出
 
-        predictions, gt_anns, meta = self.predictor.numpy_image(
-            frameRGB
-        )  # Finds the keypoints of the image
-
-        if predictions == []:  # If no keypoints found, return an empty list
-            predict = []
+        # 检查是否检测到了任何姿态
+        if results[0].keypoints.shape[0] > 0:
+            # results[0].keypoints.xy 返回一个tensor，形状为 (检测到的人数, 关键点数量, 2)
+            # 我们模仿原始代码的行为，只返回第一个检测到的人的关键点
+            keypoints_xy = results[0].keypoints.xy[0]
+            
+            # 将结果从PyTorch Tensor转换为Numpy Array
+            predict = keypoints_xy.cpu().numpy()
 
         else:
-            predict = predictions[0].data[
-                :, :2
-            ]  # If keypoints found, remove the probability column
+            # 如果没有检测到人，返回空列表
+            predict = []
 
-        return predict  # Return the predicted points
-
+        return predict
 
 class FeatureExtractor:
     """
@@ -423,7 +468,7 @@ class FeatureExtractor:
         Takes as input the video and cost method
         Returns the list of the costs computed
         """
-
+        falled = False
         plot = plt.figure(figsize=(5, 5))
         camera_video = cv2.VideoCapture(video)  # Capture the video
         camera_video.set(3, 1280)  # Width of the video
@@ -536,6 +581,9 @@ class FeatureExtractor:
                     weighted_cost = (
                         np.dot(self.cache_weights, cache) / 6
                     )  # Calculate the cost based on previous 6 costs
+                    # print(weighted_cost)
+                    if weighted_cost > self.threshold:
+                        falled = True
 
                     cache = cache[
                         1:
@@ -597,13 +645,13 @@ class FeatureExtractor:
                 if save:
                     out.write(merged)
 
-                cv2.imshow("plot", merged)
+                # cv2.imshow("plot", merged)
 
             frame_index += 1  # Add 1 to frame index
-            k = cv2.waitKey(1) & 0xFF
+            # k = cv2.waitKey(1) & 0xFF
 
-            if k == 27:  # If esc is pressed break
-                break
+            # if k == 27:  # If esc is pressed break
+            #     break
 
         camera_video.release()
 
@@ -611,6 +659,7 @@ class FeatureExtractor:
             out.release()
 
         cv2.destroyAllWindows()
+        print("Falled: ", falled)
 
     def plot(self, axis, cost, costmethod, fall_start, fall_end):
         """
