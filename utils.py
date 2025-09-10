@@ -7,6 +7,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 from ultralytics import YOLO
+from PIL import Image, ImageDraw, ImageFont
 
 
 class KeyPoints:
@@ -96,6 +97,37 @@ class FeatureExtractor:
         self.keypoints.model()  # Call the model method of the keypoints class to load the openpifpaf model
         self.fps = 6  # Number of frames to consider in every second
         self.threshold = 10  # The threshold for fall detection
+
+    def draw_box_string(self, img, x, y, string, color):
+        """
+        在图片上绘制中文字符。
+        img: imread读取的图片 (numpy array);
+        x,y: 字符起始绘制的位置;
+        string: 显示的文字;
+        color: 字体颜色，注意这里是OpenCV的BGR格式 (例如：(0, 255, 0) for green);
+        return: 绘制了文字的图片 (numpy array)
+        """
+        # 将OpenCV的BGR图像转换为Pillow的RGB图像
+        img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(img_pil)
+
+        # 加载字体文件（请确保'simhei.ttf'在您的项目路径下）
+        # 字体大小可以根据需要调整
+        try:
+            font = ImageFont.truetype("simhei.ttf", 30, encoding="utf-8")
+        except IOError:
+            print("字体文件'simhei.ttf'未找到，请检查路径。")
+            font = ImageFont.load_default()
+
+        # Pillow使用的颜色是RGB格式，所以需要将BGR转换为RGB
+        color_rgb = (color[2], color[1], color[0])
+
+        # 在指定位置绘制文字
+        draw.text((x, y), string, font=font, fill=color_rgb)
+
+        # 将Pillow图像转换回OpenCV的BGR格式
+        img = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        return img
 
     def get_body_dimension(self, keypoints):
         """
@@ -709,25 +741,21 @@ class FeatureExtractor:
                 )
 
                 threshold = self.chooseThreshold(cost_method)
-                status_text = "status: normal"
-                status_color = (0, 255, 0) # 绿色
-                if potential_fall_frames > 0:
-                    status_text = "status: Likely Fall (Checking Pose...)"
-                    status_color = (0, 255, 255) # 黄色
-                elif falled:
-                    status_text = "status: Fall Detected!"
-                    status_color = (0, 0, 255) # 红色
+                # 初始化状态和颜色
+                status_text = "状态: 正常"
+                status_color = (0, 255, 0)  # 绿色 (BGR)
 
-                cv2.putText(
-                    frame,
-                    status_text,
-                    (0, 150),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    status_color,
-                    2,
-                    cv2.LINE_AA,
-                )
+                # 根据条件更新状态和颜色
+                if potential_fall_frames > 0:
+                    status_text = "状态: 可能跌倒 (姿态检测中...)"
+                    status_color = (0, 255, 255)  # 黄色 (BGR)
+                elif falled:
+                    status_text = "状态: 检测到跌倒!"
+                    status_color = (0, 0, 255)  # 红色 (BGR)
+
+                # 使用我们新的函数来绘制中文状态
+                # (0, 110) 是文字的起始坐标，您可以根据需要调整
+                frame = self.draw_box_string(frame, 0, 110, status_text, status_color)
 
                 plt.clf()  # Clear the plot
                 plt.xlim(
