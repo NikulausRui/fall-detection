@@ -1,7 +1,8 @@
 import argparse
 import os
 
-from utils import FeatureExtractor, KeyPoints
+# from utils import FeatureExtractor, KeyPoints
+from utils import FallDetector
 
 parser = argparse.ArgumentParser(description="Process a video. ")
 parser.add_argument(
@@ -24,6 +25,12 @@ args = parser.parse_args()
 
 if __name__ == "__main__":
     os.makedirs("assets/outputs", exist_ok=True)
-    featureextractor = FeatureExtractor()
-    cost = featureextractor.realTimeVideo(
-        str(args.video), str(args.method), args.save)
+    # featureextractor = FeatureExtractor()
+    featureextractor = FallDetector()
+    # cost = featureextractor.realTimeVideo(
+    cost = featureextractor.process_video(
+        video_path=args.video,
+        cost_method=args.method,
+        save_output=args.save
+    )
+        # str(args.video), str(args.method), args.save)

@@ -16,8 +16,7 @@ matplotlib.use('Agg')
 
 class PoseEstimator:
     """
-    负责加载YOLOv8姿态模型。
-    追踪功能将在主检测器中通过调用 model.track() 实现。
+    负责加载YOLOv8姿态模型并进行关键点检测。
     """
 
     def __init__(self, model_path: str = "yolov8n-pose.pt"):
@@ -32,10 +31,29 @@ class PoseEstimator:
         self.model = YOLO(model_path)
         print("模型加载完毕。")
 
+    def detect_keypoints(self, frame: np.ndarray) -> np.ndarray:
+        """
+        对输入的图像帧进行姿态估计，并返回第一个检测到的人的关键点。
+
+        Args:
+            frame (np.ndarray): OpenCV格式的图像 (BGR)。
+
+        Returns:
+            np.ndarray: 第一个检测到的人的关键点坐标 (x, y)，格式为 numpy array。
+                        如果没有检测到人，则返回一个空数组。
+        """
+        results = self.model.predict(frame, verbose=False)
+
+        if results and results[0].keypoints and results[0].keypoints.shape[0] > 0:
+            keypoints_xy = results[0].keypoints.xy[0]
+            return keypoints_xy.cpu().numpy()
+        else:
+            return np.array([])
+
 
 class PoseProcessor:
     """
-    负责处理、增强和分析姿态关键点数据。(此类无需修改)
+    负责处理、增强和分析姿态关键点数据。
     """
 
     def __init__(self):
@@ -125,7 +143,7 @@ class PoseProcessor:
             return angles.reshape(-1, 1) * angle_weights
 
         except (IndexError, TypeError) as e:
-            # print(f"计算角度时出错: {e}") # 在多人场景下可能会频繁出现，建议注释掉
+            print(f"计算角度时出错: {e}")
             return None
 
     def get_body_dimension(self, keypoints: np.ndarray) -> Optional[float]:
@@ -176,10 +194,10 @@ class PoseProcessor:
         vertical_distance = abs(head_avg_y - ankle_avg_y)
 
         if vertical_distance < dynamic_tolerance:
-            # print(
-            #     f"[姿态确认] 检测到躺倒姿态: 头-脚垂直距离={vertical_distance:.1f} < "
-            #     f"动态阈值={dynamic_tolerance:.1f} (身体尺寸={body_size:.1f})"
-            # )
+            print(
+                f"[姿态确认] 检测到躺倒姿态: 头-脚垂直距离={vertical_distance:.1f} < "
+                f"动态阈值={dynamic_tolerance:.1f} (身体尺寸={body_size:.1f})"
+            )
             return True
         return False
 
@@ -189,7 +207,7 @@ class FallVisualizer:
     负责所有可视化任务，如绘制文本、图表和拼接图像。
     """
 
-    def __init__(self, font_path: str = "simhei.ttf", font_size: int = 20):
+    def __init__(self, font_path: str = "simhei.ttf", font_size: int = 30):
         try:
             self.font = ImageFont.truetype(
                 font_path, font_size, encoding="utf-8")
@@ -197,72 +215,35 @@ class FallVisualizer:
             print(f"警告: 字体文件 '{font_path}' 未找到，将使用默认字体。")
             self.font = ImageFont.load_default()
 
-    def draw_person_info(self, frame: np.ndarray, bbox: np.ndarray, text: str, color: Tuple[int, int, int]) -> np.ndarray:
+    def draw_status(self, frame: np.ndarray, text: str, color: Tuple[int, int, int], position: Tuple[int, int] = (10, 10)) -> np.ndarray:
         """
-        在图像上绘制单个人的边界框和状态文本 (ultralytics风格)。
+        在图像上绘制状态文本（支持中文）。
 
         Args:
             frame (np.ndarray): OpenCV BGR 格式图像。
-            bbox (np.ndarray): 单个边界框坐标 [x1, y1, x2, y2]。
             text (str): 要绘制的文本。
             color (Tuple[int, int, int]): BGR 格式的颜色。
+            position (Tuple[int, int]): 文本左上角坐标 (x, y)。
 
         Returns:
-            np.ndarray: 绘制了信息的图像。
+            np.ndarray: 绘制了文本的图像。
         """
-        x1, y1, x2, y2 = map(int, bbox)
-
-        # 1. 绘制主要边界框
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-
-        # 2. 准备使用 Pillow 绘制文本和背景
         img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
-
-        # 3. 定义颜色
-        text_color_rgb = (0, 0, 0)  # 统一使用黑色字体
-        # 将 BGR 转换为 Pillow 的 RGB
-        background_color_rgb = (color[2], color[1], color[0])
-
-        # 4. 计算文本尺寸以确定背景大小
-        try:
-            # 现代Pillow版本使用 textbbox
-            text_box = draw.textbbox((0, 0), text, font=self.font)
-            text_w = text_box[2] - text_box[0]
-            text_h = text_box[3] - text_box[1]
-        except AttributeError:
-            # 兼容旧版Pillow的 textsize
-            text_w, text_h = draw.textsize(text, font=self.font)
-
-        padding = 5
-        # 5. 绘制文本背景矩形
-        background_rect_end_x = x1 + text_w + 2 * padding
-        background_rect_end_y = y1 + text_h + 2 * padding
-        draw.rectangle(
-            [(x1, y1), (background_rect_end_x, background_rect_end_y)],
-            fill=background_color_rgb
-        )
-
-        # 6. 在背景上绘制黑色文本
-        draw.text(
-            (x1 + padding, y1 + padding),
-            text,
-            font=self.font,
-            fill=text_color_rgb
-        )
-
-        # 7. 将图像转换回OpenCV格式并返回
+        # 将 BGR 转换为 Pillow 使用的 RGB
+        color_rgb = (color[2], color[1], color[0])
+        draw.text(position, text, font=self.font, fill=color_rgb)
         return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
-    def create_plot_image(self, all_costs: Dict[int, List[float]], threshold: float,
-                          colors: Dict[int, Tuple[int, int, int]], plot_size: Tuple[int, int] = (500, 500)) -> np.ndarray:
+    def create_plot_image(self, costs: List[float], threshold: float, current_x: int,
+                          plot_size: Tuple[int, int] = (500, 500)) -> np.ndarray:
         """
-        创建一个包含多个成本曲线的图像。
+        创建一个成本曲线的图像。
 
         Args:
-            all_costs (Dict[int, List[float]]): 包含每个track_id及其成本列表的字典。
+            costs (List[float]): 成本值列表。
             threshold (float): 阈值线。
-            colors (Dict[int, Tuple[int, int, int]]): 每个track_id对应的BGR颜色。
+            current_x (int): 当前图表的 x 轴中心点。
             plot_size (Tuple[int, int]): 输出图像的尺寸 (宽, 高)。
 
         Returns:
@@ -271,19 +252,10 @@ class FallVisualizer:
         fig = plt.figure(figsize=(plot_size[0] / 100, plot_size[1] / 100))
         plt.clf()
         plt.ylim(0, threshold + 50)
-
-        for track_id, costs in all_costs.items():
-            if costs:
-                # 将 BGR 颜色转换为 matplotlib 接受的 RGB (0-1范围)
-                bgr_color = colors.get(track_id, (0, 0, 0))
-                rgb_color = (bgr_color[2]/255.0,
-                             bgr_color[1]/255.0, bgr_color[0]/255.0)
-                plt.plot(costs, color=rgb_color,
-                         label=f'Person ID: {track_id}')
-
+        plt.plot(costs, color='blue')
         plt.axhline(y=threshold, color='red', linestyle='--',
                     label=f'Threshold: {threshold:.2f}')
-        plt.title("Fall Detection Cost per Person")
+        plt.title("Fall Detection Cost")
         plt.xlabel("Frame Sequence")
         plt.ylabel("Cost")
         plt.legend()
@@ -322,7 +294,7 @@ class FallVisualizer:
 
 class FallDetector:
     """
-    跌倒检测系统的核心控制器，支持多人追踪。
+    跌倒检测系统的核心控制器。
     """
 
     def __init__(self,
@@ -360,33 +332,16 @@ class FallDetector:
             "Division": 8.5
         }
 
-        # 存储每个被追踪者的状态
-        self.tracked_persons: Dict[int, Dict] = {}
-
         self.reset()
 
     def reset(self):
         """重置检测器的内部状态。"""
-        self.tracked_persons = {}
-
-    def _get_color(self, track_id: int) -> Tuple[int, int, int]:
-        """为每个ID生成一个独特的颜色。"""
-        np.random.seed(track_id)
-        return tuple(np.random.randint(0, 255, 3).tolist())
-
-    def _initialize_person_state(self, track_id: int) -> Dict:
-        """初始化一个新追踪到的人的状态。"""
-        return {
-            "costs": [],
-            "cost_cache": [],
-            "previous_keypoints": None,
-            "previous_angles": None,
-            "potential_fall_frames": 0,
-            "fall_detected": False,
-            "bbox": None,
-            "color": self._get_color(track_id),
-            "last_seen": 0
-        }
+        self.costs: List[float] = []
+        self.cost_cache: List[float] = []
+        self.previous_keypoints: Optional[np.ndarray] = None
+        self.previous_angles: Optional[np.ndarray] = None
+        self.potential_fall_frames: int = 0
+        self.fall_detected: bool = False
 
     # --- 成本计算方法 ---
     def _cost_difference_mean(self, angles1: np.ndarray, angles2: np.ndarray) -> float:
@@ -411,7 +366,7 @@ class FallDetector:
 
     def process_video(self, video_path: str, cost_method: str, save_output: bool = True):
         """
-        处理视频文件以进行多人的跌倒检测。
+        处理视频文件以进行跌倒检测。
 
         Args:
             video_path (str): 输入视频文件的路径。
@@ -438,10 +393,10 @@ class FallDetector:
         if save_output:
             frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            output_width = frame_width + 500
+            output_width = frame_width + 500  # 视频帧 + 图表宽度
             output_height = max(frame_height, 500)
 
-            output_filename = f"assets/outputs/MultiPerson_FallDetection_{os.path.basename(video_path)}"
+            output_filename = f"assets/outputs/FallDetection_{os.path.basename(video_path)}"
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             out = cv2.VideoWriter(output_filename, fourcc,
                                   self.target_fps, (output_width, output_height))
@@ -454,96 +409,79 @@ class FallDetector:
                 break
 
             if frame_idx % step_size == 0:
-                # 使用 track 而不是 predict 来获取带ID的追踪结果
-                results = self.estimator.model.track(
-                    frame, persist=True, verbose=False)
+                current_kps_raw = self.estimator.detect_keypoints(frame)
 
-                vis_frame = frame.copy()
+                if current_kps_raw.size == 0:
+                    frame_idx += 1
+                    continue
 
-                if results[0].boxes is not None and results[0].boxes.id is not None:
-                    boxes = results[0].boxes.xyxy.cpu().numpy()
-                    track_ids = results[0].boxes.id.int().cpu().tolist()
-                    all_keypoints_raw = results[0].keypoints.xy.cpu().numpy()
+                current_kps = self.processor.preprocess_keypoints(
+                    current_kps_raw)
+                current_angles = self.processor.calculate_angles_from_keypoints(
+                    current_kps, self.angle_weights)
 
-                    for bbox, track_id, kps_raw in zip(boxes, track_ids, all_keypoints_raw):
-                        # 获取或初始化该人的状态
-                        if track_id not in self.tracked_persons:
-                            self.tracked_persons[track_id] = self._initialize_person_state(
-                                track_id)
+                if self.previous_angles is not None and current_angles is not None:
+                    # 如果有太多NaN值，则跳过此帧
+                    if np.count_nonzero(np.isnan(self.previous_angles)) >= 6 or \
+                       np.count_nonzero(np.isnan(current_angles)) >= 6:
+                        self.previous_keypoints = current_kps
+                        self.previous_angles = current_angles
+                        frame_idx += 1
+                        continue
 
-                        person = self.tracked_persons[track_id]
-                        person['bbox'] = bbox
-                        person['last_seen'] = frame_idx
+                    # 计算成本
+                    cost = self._calculate_cost(
+                        cost_method, self.previous_angles, current_angles)
+                    if cost is not None and not np.isnan(cost):
+                        self.cost_cache.append(cost)
 
-                        # --- 为当前这个人执行跌倒检测逻辑 ---
-                        current_kps = self.processor.preprocess_keypoints(
-                            kps_raw)
-                        current_angles = self.processor.calculate_angles_from_keypoints(
-                            current_kps, self.angle_weights)
+                        if len(self.cost_cache) >= 6:
+                            weighted_cost = np.dot(
+                                self.cache_weights, self.cost_cache) / 6
+                            self.costs.append(float(weighted_cost.item()))
+                            self.cost_cache.pop(0)  # 维持缓存大小
 
-                        if person['previous_angles'] is not None and current_angles is not None:
-                            if np.count_nonzero(np.isnan(person['previous_angles'])) >= 6 or \
-                               np.count_nonzero(np.isnan(current_angles)) >= 6:
-                                person['previous_keypoints'] = current_kps
-                                person['previous_angles'] = current_angles
-                                continue
+                            # --- 跌倒检测逻辑 ---
+                            if float(weighted_cost.item()) > threshold:
+                                print(
+                                    f"[初步触发] 成本值超限: {weighted_cost.item():.2f} > {threshold}")
+                                self.potential_fall_frames = 5  # 设置姿态确认窗口
 
-                            cost = self._calculate_cost(
-                                cost_method, person['previous_angles'], current_angles)
-                            if cost is not None and not np.isnan(cost):
-                                person['cost_cache'].append(cost)
+                            if self.potential_fall_frames > 0:
+                                if self.processor.is_lying_down(current_kps_raw, self.lying_tolerance_ratio):
+                                    print("!!! 跌倒确认 !!! 剧烈运动后检测到躺倒姿态。")
+                                    self.fall_detected = True
+                                    self.potential_fall_frames = 0  # 确认后重置
+                                else:
+                                    self.potential_fall_frames -= 1
 
-                                if len(person['cost_cache']) >= 6:
-                                    weighted_cost = np.dot(
-                                        self.cache_weights, person['cost_cache']) / 6
-                                    person['costs'].append(
-                                        float(weighted_cost.item()))
-                                    person['cost_cache'].pop(0)
+                # 更新状态
+                self.previous_keypoints = current_kps
+                self.previous_angles = current_angles
 
-                                    if float(weighted_cost.item()) > threshold:
-                                        person['potential_fall_frames'] = 5
-
-                                    if person['potential_fall_frames'] > 0:
-                                        if self.processor.is_lying_down(kps_raw, self.lying_tolerance_ratio):
-                                            print(
-                                                f"!!! ID {track_id} 跌倒确认 !!! 剧烈运动后检测到躺倒姿态。")
-                                            person['fall_detected'] = True
-                                            person['potential_fall_frames'] = 0
-                                        else:
-                                            person['potential_fall_frames'] -= 1
-
-                        person['previous_keypoints'] = current_kps
-                        person['previous_angles'] = current_angles
-
-                # --- 帧的可视化 ---
+                # --- 可视化 ---
                 if save_output and out:
-                    # 绘制每个人的信息
-                    for track_id, person in self.tracked_persons.items():
-                        # 只绘制当前帧可见的人
-                        if person['last_seen'] == frame_idx:
-                            if person['fall_detected']:
-                                status_text, color = f"ID {track_id}: 跌倒!", (
-                                    0, 0, 255)
-                            elif person['potential_fall_frames'] > 0:
-                                status_text, color = f"ID {track_id}: 可能跌倒", (
-                                    0, 255, 255)
-                            else:
-                                status_text, color = f"ID {track_id}: 正常", person['color']
+                    # 确定状态和颜色
+                    if self.fall_detected:
+                        status_text, color = "状态: 检测到跌倒!", (0, 0, 255)  # 红
+                    elif self.potential_fall_frames > 0:
+                        # 黄
+                        status_text, color = "状态: 可能跌倒 (姿态检测中...)", (0,
+                                                                     255, 255)
+                    else:
+                        status_text, color = "状态: 正常", (0, 255, 0)  # 绿
 
-                            vis_frame = self.visualizer.draw_person_info(
-                                vis_frame, person['bbox'], status_text, color)
-
-                    # 创建并合并图表
-                    all_costs_data = {tid: p['costs']
-                                      for tid, p in self.tracked_persons.items()}
-                    colors_data = {tid: p['color']
-                                   for tid, p in self.tracked_persons.items()}
+                    frame_with_status = self.visualizer.draw_status(
+                        frame, status_text, color)
                     plot_img = self.visualizer.create_plot_image(
-                        all_costs_data, threshold, colors_data)
+                        self.costs, threshold, len(self.costs))
                     combined_frame = self.visualizer.combine_frame_and_plot(
-                        vis_frame, plot_img)
+                        frame_with_status, plot_img)
 
                     out.write(combined_frame)
+                    # cv2.imshow("Fall Detection", combined_frame) # 可选：实时显示处理结果
+                    # if cv2.waitKey(1) & 0xFF == 27:
+                    #     break
 
             frame_idx += 1
 
@@ -551,27 +489,27 @@ class FallDetector:
         if out:
             out.release()
         cv2.destroyAllWindows()
-        print("处理完成。")
+        print(f"处理完成。最终检测结果 - 是否跌倒: {self.fall_detected}")
 
 
 if __name__ == '__main__':
     # --- 使用示例 ---
     # 1. 创建FallDetector实例
+    # 可以指定模型路径，例如 "yolov8m-pose.pt" 以获得更高精度
     detector = FallDetector(model_path="yolov8n-pose.pt", target_fps=6)
 
-    # 2. 定义输入视频和成本计算方法
-    # 确保你的视频文件路径正确，可以使用包含多人的视频
-    video_file = "assets/inputs/fall-multi.mp4"  # <--- 修改为你的多人视频路径
+    # 2. 定义输入视频和要使用的成本计算方法
+    # 确保你的视频文件路径正确
+    video_file = "assets/inputs/fall.mp4"  # <--- 修改为你的视频路径
+    # 可选的成本方法: "DifferenceMean", "DifferenceSum", "MeanDifference", "Mean", "Division"
     selected_cost_method = "DifferenceMean"
 
     # 3. 运行处理
     if os.path.exists(video_file):
-        # 确保输出目录存在
-        os.makedirs("assets/outputs", exist_ok=True)
         detector.process_video(
             video_path=video_file,
             cost_method=selected_cost_method,
-            save_output=True
+            save_output=True  # 设置为True来保存带图表的视频，False则只进行分析
         )
     else:
         print(f"错误: 视频文件未找到 -> {video_file}")
