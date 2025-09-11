@@ -25,4 +25,5 @@ args = parser.parse_args()
 if __name__ == "__main__":
     os.makedirs("assets/outputs", exist_ok=True)
     featureextractor = FeatureExtractor()
-    cost = featureextractor.realTimeVideo(str(args.video), str(args.method), args.save)
+    cost = featureextractor.realTimeVideo(
+        str(args.video), str(args.method), args.save)

@@ -1,18 +1,20 @@
 # Importing the necessary libraries
-import time
 import os
+import time
+
 import cv2
 import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
-from ultralytics import YOLO
 from PIL import Image, ImageDraw, ImageFont
+from ultralytics import YOLO
+
+matplotlib.use('Agg')
 
 
 class KeyPoints:
     """
-    使用YOLOv8-Pose模型来运行并找到图像中的人体关键点。
+    使用YOLOv11-Pose模型来运行并找到图像中的人体关键点。
     function(model) - 加载模型
     function(detectPoints) - 找到图像中的关键点
     """
@@ -36,14 +38,15 @@ class KeyPoints:
         :return: 第一个检测到的人的关键点坐标 (x, y)，格式为 numpy array。如果没有检测到人，则返回空列表。
         """
         # YOLOv8的predict函数可以直接处理BGR格式的Numpy数组
-        results = self.model_pose.predict(frame, verbose=False)  # verbose=False可以关闭控制台输出
+        results = self.model_pose.predict(
+            frame, verbose=False)  # verbose=False可以关闭控制台输出
 
         # 检查是否检测到了任何姿态
         if results[0].keypoints.shape[0] > 0:
             # results[0].keypoints.xy 返回一个tensor，形状为 (检测到的人数, 关键点数量, 2)
             # 我们模仿原始代码的行为，只返回第一个检测到的人的关键点
             keypoints_xy = results[0].keypoints.xy[0]
-            
+
             # 将结果从PyTorch Tensor转换为Numpy Array
             predict = keypoints_xy.cpu().numpy()
 
@@ -53,10 +56,12 @@ class KeyPoints:
 
         return predict
 
+
 class FeatureExtractor:
     """
     Used to extract features from generated keypoints.
     """
+
     def __init__(self):
         self.torso_up = np.array(
             [[5, 6]]
@@ -94,7 +99,8 @@ class FeatureExtractor:
         self.angle_weights = np.ones((8, 1))  # Weights for angles
         self.cache_weights = np.ones((1, 6))  # Weights for the cache
         self.keypoints = KeyPoints()  # Initialize the keypoints class
-        self.keypoints.model()  # Call the model method of the keypoints class to load the openpifpaf model
+        # Call the model method of the keypoints class to load the openpifpaf model
+        self.keypoints.model()
         self.fps = 6  # Number of frames to consider in every second
         self.threshold = 10  # The threshold for fall detection
 
@@ -137,23 +143,22 @@ class FeatureExtractor:
         """
         # 过滤掉无效的关键点 (NaN 值)
         valid_points = keypoints[~np.isnan(keypoints).any(axis=1)]
-        
+
         # 如果可见的关键点太少，无法可靠计算尺寸
         if len(valid_points) < 3:
             return None
 
         x_min, y_min = np.min(valid_points, axis=0)
         x_max, y_max = np.max(valid_points, axis=0)
-        
+
         width = x_max - x_min
         height = y_max - y_min
-        
+
         # 计算对角线长度
         diagonal = np.sqrt(width**2 + height**2)
-        
+
         # 避免尺寸为0的情况
         return diagonal if diagonal > 10 else None
-
 
     def is_lying_down(self, keypoints, tolerance_ratio=0.3):
         """
@@ -167,11 +172,11 @@ class FeatureExtractor:
         """
         # 步骤1: 使用新的、更稳健的方法计算身体尺寸标尺
         body_size_metric = self.get_body_dimension(keypoints)
-        
+
         if body_size_metric is None:
             # 如果无法计算身体尺寸，则无法进行可靠判断
             return False
-            
+
         dynamic_tolerance = body_size_metric * tolerance_ratio
 
         # 步骤2: 计算头脚垂直距离 (这部分逻辑不变)
@@ -184,12 +189,13 @@ class FeatureExtractor:
         if np.all(np.isnan(ankle_y_coords)):
             return False
         ankle_avg_y = np.nanmean(ankle_y_coords)
-        
+
         vertical_distance = abs(head_avg_y - ankle_avg_y)
 
         # 步骤3: 使用新的动态 tolerance 进行判断
         if vertical_distance < dynamic_tolerance:
-            print(f"[姿态确认] 检测到躺倒姿态: 头-脚垂直距离={vertical_distance:.1f} < 动态阈值={dynamic_tolerance:.1f} (身体尺寸={body_size_metric:.1f})")
+            print(
+                f"[姿态确认] 检测到躺倒姿态: 头-脚垂直距离={vertical_distance:.1f} < 动态阈值={dynamic_tolerance:.1f} (身体尺寸={body_size_metric:.1f})")
             return True
 
         return False
@@ -230,7 +236,7 @@ class FeatureExtractor:
         Takes as input the list of keypoints
         Returns the list of handled keypoints and added extra points
         """
-        
+
         keypoints = self.handleMissingValues(keypoints)
         keypoints = self.addExtraPoints(keypoints)
 
@@ -242,7 +248,7 @@ class FeatureExtractor:
         Takes as input previous frame angles and current frame angles
         Returns a scalar (the cost)
         """
-        
+
         angle_difference = np.abs(
             vector1_angles - vector2_angles
         )  # Absolute difference of previous frame's angles and current frame's angles
@@ -271,7 +277,8 @@ class FeatureExtractor:
             vector1_angles - vector2_angles
         )  # Absolute difference of previous and current frame angles
 
-        return np.nansum(angle_difference)  # Returns the sum of angle differences
+        # Returns the sum of angle differences
+        return np.nansum(angle_difference)
 
     def costMean(self, vector_angles):
         """
@@ -280,7 +287,8 @@ class FeatureExtractor:
         Returns a scalar (the cost)
         """
 
-        return np.nanmean(vector_angles)  # Return the mean of the angles for the frame
+        # Return the mean of the angles for the frame
+        return np.nanmean(vector_angles)
 
     def divisionCost(self, vector1_angles, vector2_angles):
         """
@@ -351,13 +359,15 @@ class FeatureExtractor:
         Returns the list of the bounded costs
         """
 
-        sorted_ = np.sort(costs.reshape((len(costs))), axis=-1)  # Sort the costs
+        sorted_ = np.sort(costs.reshape((len(costs))),
+                          axis=-1)  # Sort the costs
 
         mean_start = np.mean(sorted_[:int(len(sorted_) * 0.1)])
 
         mean_end = np.mean(sorted_[len(sorted_) - int(len(sorted_) * 0.1):])
 
-        result = np.clip(costs, mean_start, mean_end)  # Bound the list with that values
+        # Bound the list with that values
+        result = np.clip(costs, mean_start, mean_end)
 
         normalized = (result - mean_start) / (
             mean_end - mean_start
@@ -371,7 +381,7 @@ class FeatureExtractor:
         Takes as input the cost method
         Returns the threshold for that cost method
         """
-        
+
         if cost_method == "DifferenceMean":
             self.threshold = 58
         elif cost_method == "DifferenceSum":
@@ -395,12 +405,13 @@ class FeatureExtractor:
         camera_video = cv2.VideoCapture(video)  # Capture the video
         camera_video.set(3, 1280)  # Width of the video
         camera_video.set(4, 960)  # Height of the video
-        video_fps = camera_video.get(cv2.CAP_PROP_FPS)  # Get the fps of the video
+        # Get the fps of the video
+        video_fps = camera_video.get(cv2.CAP_PROP_FPS)
 
         if video_fps != 30.0:  # If not 30 fps
             print(f"警告：视频FPS为 {video_fps}，不是30fps")
             print("尝试自动转换视频...")
-            
+
             # 尝试转换视频
             try:
                 from video_converter import convert_video
@@ -456,10 +467,10 @@ class FeatureExtractor:
                     current_keypoints
                 )  # Handle missing values and add extra ones for current frame
 
-                               # 检查关键点是否有效
+                # 检查关键点是否有效
                 if len(previous_keypoints) == 0 or len(current_keypoints) == 0:
                     continue
-                
+
                 try:
                     vector1_pairs = np.array(
                         previous_keypoints[self.vector_indices][self.pair_indices]
@@ -527,7 +538,8 @@ class FeatureExtractor:
                         weighted_cost
                     )  # Append the weighted cost to the cost list
 
-                previous_keypoints = current_keypoints  # Assign the current keypoints to the previous keypoints for the next frame
+                # Assign the current keypoints to the previous keypoints for the next frame
+                previous_keypoints = current_keypoints
 
                 previous_cost = (
                     cost  # Assign current cost to the previous cost for the next frame
@@ -564,7 +576,7 @@ class FeatureExtractor:
         if video_fps != 30.0:  # If not 30 fps
             print(f"警告：视频FPS为 {video_fps}，不是30fps")
             print("尝试自动转换视频...")
-            
+
             # 尝试转换视频
             try:
                 from video_converter import convert_video
@@ -588,7 +600,7 @@ class FeatureExtractor:
             fourcc = cv2.VideoWriter_fourcc(*"MP4V")
             frame_width = int(camera_video.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(camera_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
+
         # 计算合成后的图像尺寸
         plot_width = 500
         plot_height = 500
@@ -599,7 +611,8 @@ class FeatureExtractor:
         out = cv2.VideoWriter(
             output_filename, fourcc, self.fps, (output_width, output_height)
         )
-        print(f"输出视频已创建: {output_filename}, 尺寸: {output_width}x{output_height}, FPS: {self.fps}")
+        print(
+            f"输出视频已创建: {output_filename}, 尺寸: {output_width}x{output_height}, FPS: {self.fps}")
 
         frame_index = 0  # Frame Index
         previous_keypoints = 0  # Variable for storing the previous keypoints
@@ -640,10 +653,10 @@ class FeatureExtractor:
                     current_keypoints
                 )  # Handle missing values and add extra ones for current frame
 
-                               # 检查关键点是否有效
+                # 检查关键点是否有效
                 if len(previous_keypoints) == 0 or len(current_keypoints) == 0:
                     continue
-                
+
                 try:
                     vector1_pairs = np.array(
                         previous_keypoints[self.vector_indices][self.pair_indices]
@@ -705,24 +718,26 @@ class FeatureExtractor:
                     # print(weighted_cost)
                     weighted_cost_value = float(weighted_cost.item())
                     if weighted_cost_value > self.threshold:
-                        print(f"[初步触发] 成本值超限: {weighted_cost_value:.2f} > {self.threshold}")
+                        print(
+                            f"[初步触发] 成本值超限: {weighted_cost_value:.2f} > {self.threshold}")
                         # 设置一个时间窗口（例如5帧），在接下来的5帧内检查姿态
-                        potential_fall_frames = 5 
+                        potential_fall_frames = 5
 
                     # 步骤 2: 姿态确认 - 在时间窗口内检查是否躺倒
                     if potential_fall_frames > 0:
                         # 使用当前帧的关键点进行姿态检查
                         # 注意：current_keypoints 此时已经经过 collectData 处理
-                        if len(current_keypoints) > 17: # 确保关键点有效
+                        if len(current_keypoints) > 17:  # 确保关键点有效
                             # 调用我们新写的函数，可以调整 tolerance
-                            is_lying = self.is_lying_down(current_keypoints, tolerance_ratio=0.15)
-                            
+                            is_lying = self.is_lying_down(
+                                current_keypoints, tolerance_ratio=0.15)
+
                             if is_lying:
                                 print("!!! 跌倒确认 !!! 剧烈运动后检测到躺倒姿态。")
                                 falled = True
                                 # 可以在这里添加报警、变色等视觉提示
-                                potential_fall_frames = 0 # 确认后重置，避免重复报警
-                    
+                                potential_fall_frames = 0  # 确认后重置，避免重复报警
+
                     # 递减时间窗口
                     potential_fall_frames -= 1
 
@@ -734,7 +749,8 @@ class FeatureExtractor:
                         weighted_cost
                     )  # Append the weighted cost to the cost list
 
-                previous_keypoints = current_keypoints  # Assign the current keypoints to the previous keypoints for the next frame
+                # Assign the current keypoints to the previous keypoints for the next frame
+                previous_keypoints = current_keypoints
 
                 previous_cost = (
                     cost  # Assign current cost to the previous cost for the next frame
@@ -755,7 +771,8 @@ class FeatureExtractor:
 
                 # 使用我们新的函数来绘制中文状态
                 # (0, 110) 是文字的起始坐标，您可以根据需要调整
-                frame = self.draw_box_string(frame, 0, 110, status_text, status_color)
+                frame = self.draw_box_string(
+                    frame, 0, 110, status_text, status_color)
 
                 plt.clf()  # Clear the plot
                 plt.xlim(
@@ -768,7 +785,8 @@ class FeatureExtractor:
                     frame_index / 5 + 15,
                 ]  # The threshold x cord
                 y_cord = [threshold, threshold]  # The threshold y cord
-                plt.plot(x_cord, y_cord, color="red")  # Plot the threshold line
+                # Plot the threshold line
+                plt.plot(x_cord, y_cord, color="red")
                 plot.canvas.flush_events()  # Clears the old figure
 
                 img = np.fromstring(
@@ -779,24 +797,25 @@ class FeatureExtractor:
                     plot.canvas.get_width_height()[::-1] + (3,)
                 )  # Used to convert plot to image
 
-                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)  # Convert the image to BGR
+                # Convert the image to BGR
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
                 h1, w1 = frame.shape[:2]
                 h2, w2 = img.shape[:2]
                 merged = np.zeros((max(h1, h2), w1 + w2, 3), dtype=np.uint8)
                 merged[:, :] = (255, 255, 255)
                 merged[:h1, :w1, :3] = frame
-                merged[:h2, w1 : w1 + w2, :3] = img
+                merged[:h2, w1: w1 + w2, :3] = img
 
                 if save:
                     out.write(merged)
 
-                        # cv2.imshow("plot", merged)
+                    # cv2.imshow("plot", merged)
 
             frame_index += 1  # Add 1 to frame index
-                # k = cv2.waitKey(1) & 0xFF
+            # k = cv2.waitKey(1) & 0xFF
 
-                # if k == 27:  # If esc is pressed break
-                #     break
+            # if k == 27:  # If esc is pressed break
+            #     break
 
         camera_video.release()
 
@@ -817,7 +836,8 @@ class FeatureExtractor:
         axis.plot(cost, label="cost")
         axis.set_title(f"Cost method is: {costmethod}")
         axis.axhline(y=threshold, label="Threshold", color="black")
-        axis.axvspan(fall_start, fall_end, alpha=0.25, color="red", label="Fall Frames")
+        axis.axvspan(fall_start, fall_end, alpha=0.25,
+                     color="red", label="Fall Frames")
         axis.legend(loc="upper right")
 
     def separatePlot(self, cost, costmethod, save=False):
